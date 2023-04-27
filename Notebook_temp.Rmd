@@ -1,0 +1,184 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+###Downloading and Preparing NOAA OISST Data
+##Robert W Schlegel and AJ Smit
+#2021-10-26
+
+https://cran.r-project.org/web/packages/heatwaveR/vignettes/OISST_preparation.html
+
+
+##Overview
+
+In this vignette we will see how to retrieve and prepare Reynolds optimally interpolated sea surface temperature (OISST) data for calculating marine heatwaves (MHWs). The OISST product is a global 1/4 degree gridded dataset of Advanced Very High Resolution Radiometer (AVHRR) derived SSTs at a daily resolution, starting on 1 September 1981. The source of the data is currently the NOAA NCDC.
+
+Each daily global file, when not compressed, is around 8.3 MB, so they add up to a large amount of data when a time series of the recommended 30 year minimum duration for the detection of MHWs is downloaded. If one were to download all of the data currently available it would exceed 100 GB of total disk space. It is therefore best practice to download only a subset of the data that matches one’s study area. Thanks to the rerddap package this is incredibly easy to do in R.
+
+Should one want to download the full global dataset, each daily global file is available in netCDF format and is roughly 1.6 MB. This means that one full year of global data will be roughly 600 MB, and the full dataset roughly 25 GB. This is however when the data are very compressed. If we were to attempt to load the entire uncompressed dataset into our memory at once it would take more than 200 GB of RAM. That is well beyond the scope of any current laptop so in the second half of this vignette we will see how to download the full OISST dataset before then seeing how we can load only a subset of the data into the R environment for use with further analyses.
+
+This vignette may appear very long and complex but it has been written in an attempt to keep the process of downloading and working with satellite data as straight-forward and easy to follow as possible. Before we begin with all of the code etc. please note that for almost all applications it is only necessary to use the first method outlined below. For most users the second download method in this vignette can simply be skipped.
+
+
+
+##Setup
+
+For this vignette we will be accessing the NOAA OISST dataset on this ERDDAP server for the subsetted data, while the global data are indexed here. One may download the data on both servers manually by using the ERDDAP UI or clicking on each indexed file individually. But programming languages like R are designed to prevent us from needing to experience that sort of anguish. Below we will load the libraries we need in order to have R download all of the data that we may need. If any of the lines of code in the following chunk do not run it means that we will need to first install that package. Uncomment the line of code that would install the problem package and run it before trying to load the library again.
+
+
+
+
+```{r Env setting}
+
+# The packages we will need
+# install.packages("dplyr")
+# install.packages("lubridate")
+# install.packages("ggplot2")
+# install.packages("tidync")
+# install.packages("doParallel")
+# install.packages("rerddap")
+# install.packages("plyr") # Note that this library should never be loaded, only installed
+
+
+# The packages we will use
+library(dplyr) # A staple for modern data management in R
+library(lubridate) # Useful functions for dealing with dates
+library(ggplot2) # The preferred library for data visualisation
+library(tidync) # For easily dealing with NetCDF data
+library(rerddap) # For easily downloading subsets of data
+library(doParallel) # For parallel processing
+
+
+
+```
+
+
+With our packages loaded we may now begin downloading and preparing our data for further use. Please use the table of contents on the right side of the screen to jump between the different download methods as desired. We will break each different method down into smaller steps in order to keep this process as clear as possible. Before we begin I need to stress that this is a very direct and unrestricted method for accessing these data and I urge responsibility in only downloading as much data as are necessary. Please do not download the entire dataset unless you have a specific need for it.
+
+
+### Downloading subsetted data
+## File information
+
+Before we begin downloading the subsetted data for our study area we need to make sure that they are currently available on an ERDDAP server. The location of the NOAA OISST data has changed in the past so it should not be assumed that the current location will exist in perpetuity. Finding the server on which these data are located can be a cup game at times.
+
+```{r}
+
+# The information for the NOAA OISST data
+rerddap::info(datasetid = "ncdcOisst21Agg_LonPM180", url = "https://coastwatch.pfeg.noaa.gov/erddap/")
+
+
+# Note that there is also a version with lon values from 0 yo 360
+rerddap::info(datasetid = "ncdcOisst21Agg", url = "https://coastwatch.pfeg.noaa.gov/erddap/")
+
+
+```
+
+With our target dataset identified we may now begin the download with the griddap() function. While putting this vignette together however I noticed one little hiccup in the work flow. It seems that the ERDDAP server does not like it when one tries to access more than nine consecutive years of data in one request, regardless of the spatial extent being requested. So before we download our data we are going to make a wrapper function that helps us control the range of times we want to download. This will reduce the amount of redundant coding we would otherwise need to do.
+
+
+## Download function
+
+```{r Donwload function}
+
+# This function downloads and prepares data based on user provided start and end dates
+
+OISST_sub_dl <- function(time_df){
+  OISST_dat <- griddap(x = "ncdcOisst21Agg_LonPM180", 
+                       url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                       time = c(time_df$start, time_df$end), 
+                       zlev = c(0, 0),
+                       latitude = c(-40, -35),
+                       longitude = c(15, 21),
+                       fields = "sst")$data %>% 
+    mutate(time = as.Date(stringr::str_remove(time, "T00:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst) %>% 
+    select(lon, lat, t, temp) %>% 
+    na.omit()
+}
+
+```
+
+
+In the wrapper function above we see that we have chosen to download only the ‘sst’ data out of the several variables (‘fields’) available to us. We also see that we have chosen the spatial extent of latitude -40 to -35 and longitude 15 to 21. This a small window over some of the Agulhas Retroflection to the south west of South Africa. A larger area is not being chosen here simply due to the speed constraints of downloading the data and detecting the events therein. One may simply change the longitude and latitude values above as necessary to match the desired study area. The function will also be re-labelling the ‘time’ column as ‘t’, and the ‘sst’ column as ‘temp’. We do this so that they match the default column names that are expected for calculating MHWs and we won’t have to do any extra work later on.
+
+One must note here that depending on the RAM available on one’s machine, it may not be possible to handle all of the data downloaded at once if they are very large (e.g. > 5 GB). The discussion on the limitations of the R language due to its dependence on virtual memory is beyond the scope of this vignette, but if one limits one’s downloads to no more than several square pixels at a time that should be fine. Were one to try to download the whole Indian Ocean, for example, that may cause issues if being run on a laptop or computer of a similar power.
+
+
+## Date range
+
+With our wrapper function written we would now need to run it several times in order to grab all of the OISST data from 1982-01-01 to 2019-12-31. Even though each year of data for the extent used in this vignette is only ~360 KB, the server does not like it when more than 9 years of consecutive data are requested. The server will also end a users connection after ~17 individual files have been requested. Because we can’t download all of the data in one request, and we can’t download the data one year at a time, we will need to make requests for multiple batches of data. To accomplish this we will create a dataframe of start and end dates that will allow us to automate the entire download while meeting the aforementioned criteria.
+
+```{r}
+
+# Date download range by start and end dates per year
+dl_years <- data.frame(date_index = 1:5,
+                       start = as.Date(c("1982-01-01", "1990-01-01", 
+                                         "1998-01-01", "2006-01-01", "2014-01-01")),
+                       end = as.Date(c("1989-12-31", "1997-12-31", 
+                                       "2005-12-31", "2013-12-31", "2019-12-31")))
+
+```
+
+
+## Download/prep data
+
+One could also use the plyr suite of functions to automate the process of downloading and processing multiple files, but I’ve chosen here to stick with the tidyverse native approach. If the below chunk of code fails or times out, simply re-run it until all of the data have been downloaded.
+
+It is worth pointing out here that these data are downloaded as cached files on the users computer by using the hoardr package. This means that if one runs the same command again, it will not re-download the data because it first looks in the folder where it has automatically cached the data for you and sees that it may simply draw the data from there. No need to change anything or write a second script for loading data.
+
+```{r}
+
+# Download all of the data with one nested request
+# The time this takes will vary greatly based on connection speed
+system.time(
+  OISST_data <- dl_years %>% 
+    group_by(date_index) %>% 
+    group_modify(~OISST_sub_dl(.x)) %>% 
+    ungroup() %>% 
+    select(lon, lat, t, temp)
+) # 38 seconds, ~8 seconds per batch
+
+```
+
+If the above code chunk is giving errors it is likely due to one’s Internet connection timing out. There are also rare instances where the NOAA server is not responding due to an issue on their end. Any connection based issues may be resolved by simply waiting for a few minutes, or by ensuring a stable connection.
+
+
+Visualise data
+Before we save our data for later use it is good practice to visualise them.
+
+
+```{r}
+OISST_data %>% 
+  filter(t == "2019-12-01") %>% 
+  ggplot(aes(x = lon, y = lat)) +
+  geom_tile(aes(fill = temp)) +
+  # borders() + # Activate this line to see the global map
+  scale_fill_viridis_c() +
+  coord_quickmap(expand = F) +
+  labs(x = NULL, y = NULL, fill = "SST (°C)") +
+  theme(legend.position = "bottom")
+
+```
+
+
+## Save data
+
+With the data downloaded and prepared for further use (and a test visual run), all that’s left to do is save them.
+
+```{r}
+
+# Save the data as an .Rds file because it has a much better compression rate than .RData
+saveRDS(OISST_data, file = "~/Desktop/OISST_vignette.Rds")
+
+
+```
+
+
+
+
+
+
+
+
+
