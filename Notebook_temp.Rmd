@@ -5,12 +5,14 @@ output: html_notebook
 
 ###Downloading and Preparing NOAA OISST Data
 ##Robert W Schlegel and AJ Smit
-#2021-10-26
+2023-04-17
 
 https://cran.r-project.org/web/packages/heatwaveR/vignettes/OISST_preparation.html
 
+https://robwschlegel.github.io/heatwaveR/articles/OISST_preparation.html
 
-##Overview
+
+# Overview
 
 In this vignette we will see how to retrieve and prepare Reynolds optimally interpolated sea surface temperature (OISST) data for calculating marine heatwaves (MHWs). The OISST product is a global 1/4 degree gridded dataset of Advanced Very High Resolution Radiometer (AVHRR) derived SSTs at a daily resolution, starting on 1 September 1981. The source of the data is currently the NOAA NCDC.
 
@@ -22,7 +24,7 @@ This vignette may appear very long and complex but it has been written in an att
 
 
 
-##Setup
+## Setup
 
 For this vignette we will be accessing the NOAA OISST dataset on this ERDDAP server for the subsetted data, while the global data are indexed here. One may download the data on both servers manually by using the ERDDAP UI or clicking on each indexed file individually. But programming languages like R are designed to prevent us from needing to experience that sort of anguish. Below we will load the libraries we need in order to have R download all of the data that we may need. If any of the lines of code in the following chunk do not run it means that we will need to first install that package. Uncomment the line of code that would install the problem package and run it before trying to load the library again.
 
@@ -48,7 +50,9 @@ library(ggplot2) # The preferred library for data visualisation
 library(tidync) # For easily dealing with NetCDF data
 library(rerddap) # For easily downloading subsets of data
 library(doParallel) # For parallel processing
-
+library(tidyr) 
+library(heatwaveR) # For detecting MHWs
+library(doParallel) # For parallel processing
 
 
 ```
@@ -57,7 +61,7 @@ library(doParallel) # For parallel processing
 With our packages loaded we may now begin downloading and preparing our data for further use. Please use the table of contents on the right side of the screen to jump between the different download methods as desired. We will break each different method down into smaller steps in order to keep this process as clear as possible. Before we begin I need to stress that this is a very direct and unrestricted method for accessing these data and I urge responsibility in only downloading as much data as are necessary. Please do not download the entire dataset unless you have a specific need for it.
 
 
-### Downloading subsetted data
+# Downloading subsetted data
 ## File information
 
 Before we begin downloading the subsetted data for our study area we need to make sure that they are currently available on an ERDDAP server. The location of the NOAA OISST data has changed in the past so it should not be assumed that the current location will exist in perpetuity. Finding the server on which these data are located can be a cup game at times.
@@ -77,24 +81,24 @@ rerddap::info(datasetid = "ncdcOisst21Agg", url = "https://coastwatch.pfeg.noaa.
 With our target dataset identified we may now begin the download with the griddap() function. While putting this vignette together however I noticed one little hiccup in the work flow. It seems that the ERDDAP server does not like it when one tries to access more than nine consecutive years of data in one request, regardless of the spatial extent being requested. So before we download our data we are going to make a wrapper function that helps us control the range of times we want to download. This will reduce the amount of redundant coding we would otherwise need to do.
 
 
-## Download function
+# Download function
 
 ```{r Donwload function}
 
 # This function downloads and prepares data based on user provided start and end dates
 
 OISST_sub_dl <- function(time_df){
-  OISST_dat <- griddap(x = "ncdcOisst21Agg_LonPM180", 
-                       url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
-                       time = c(time_df$start, time_df$end), 
-                       zlev = c(0, 0),
-                       latitude = c(-40, -35),
-                       longitude = c(15, 21),
-                       fields = "sst")$data %>% 
-    mutate(time = as.Date(stringr::str_remove(time, "T00:00:00Z"))) %>% 
-    dplyr::rename(t = time, temp = sst) %>% 
-    select(lon, lat, t, temp) %>% 
-    na.omit()
+  OISST_dat <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                latitude = c(-29, -26),
+                                longitude = c(-49, -48),
+                                fields = "sst")$data %>% 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst, lon = longitude, lat = latitude) %>% 
+    dplyr::select(lon, lat, t, temp) %>% 
+    stats::na.omit()
 }
 
 ```
@@ -105,7 +109,7 @@ In the wrapper function above we see that we have chosen to download only the �
 One must note here that depending on the RAM available on one’s machine, it may not be possible to handle all of the data downloaded at once if they are very large (e.g. > 5 GB). The discussion on the limitations of the R language due to its dependence on virtual memory is beyond the scope of this vignette, but if one limits one’s downloads to no more than several square pixels at a time that should be fine. Were one to try to download the whole Indian Ocean, for example, that may cause issues if being run on a laptop or computer of a similar power.
 
 
-## Date range
+# Date range
 
 With our wrapper function written we would now need to run it several times in order to grab all of the OISST data from 1982-01-01 to 2019-12-31. Even though each year of data for the extent used in this vignette is only ~360 KB, the server does not like it when more than 9 years of consecutive data are requested. The server will also end a users connection after ~17 individual files have been requested. Because we can’t download all of the data in one request, and we can’t download the data one year at a time, we will need to make requests for multiple batches of data. To accomplish this we will create a dataframe of start and end dates that will allow us to automate the entire download while meeting the aforementioned criteria.
 
@@ -113,15 +117,22 @@ With our wrapper function written we would now need to run it several times in o
 
 # Date download range by start and end dates per year
 dl_years <- data.frame(date_index = 1:5,
-                       start = as.Date(c("1982-01-01", "1990-01-01", 
-                                         "1998-01-01", "2006-01-01", "2014-01-01")),
-                       end = as.Date(c("1989-12-31", "1997-12-31", 
-                                       "2005-12-31", "2013-12-31", "2019-12-31")))
+                       start = as.Date(c("1982-01-01", 
+                                         "1990-01-01", 
+                                         "1998-01-01",
+                                         "2006-01-01", 
+                                         "2014-01-01")),
+                       
+                       end = as.Date(c("1989-12-31", 
+                                       "1997-12-31", 
+                                       "2005-12-31",
+                                       "2013-12-31", 
+                                       "2019-12-31")))
 
 ```
 
 
-## Download/prep data
+# Download/prep data
 
 One could also use the plyr suite of functions to automate the process of downloading and processing multiple files, but I’ve chosen here to stick with the tidyverse native approach. If the below chunk of code fails or times out, simply re-run it until all of the data have been downloaded.
 
@@ -131,29 +142,30 @@ It is worth pointing out here that these data are downloaded as cached files on 
 
 # Download all of the data with one nested request
 # The time this takes will vary greatly based on connection speed
-system.time(
+base::system.time(
   OISST_data <- dl_years %>% 
-    group_by(date_index) %>% 
-    group_modify(~OISST_sub_dl(.x)) %>% 
-    ungroup() %>% 
-    select(lon, lat, t, temp)
-) # 38 seconds, ~8 seconds per batch
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp)
+) # 518 seconds, ~100 seconds per batch
 
 ```
 
 If the above code chunk is giving errors it is likely due to one’s Internet connection timing out. There are also rare instances where the NOAA server is not responding due to an issue on their end. Any connection based issues may be resolved by simply waiting for a few minutes, or by ensuring a stable connection.
 
 
-Visualise data
+# Visualise data
+
 Before we save our data for later use it is good practice to visualise them.
 
 
 ```{r}
 OISST_data %>% 
-  filter(t == "2019-12-01") %>% 
+  filter(t == "2019-06-01") %>% 
   ggplot(aes(x = lon, y = lat)) +
   geom_tile(aes(fill = temp)) +
-  # borders() + # Activate this line to see the global map
+  #borders() + # Activate this line to see the global map
   scale_fill_viridis_c() +
   coord_quickmap(expand = F) +
   labs(x = NULL, y = NULL, fill = "SST (°C)") +
@@ -162,23 +174,259 @@ OISST_data %>%
 ```
 
 
-## Save data
+# Save data
 
 With the data downloaded and prepared for further use (and a test visual run), all that’s left to do is save them.
 
 ```{r}
 
 # Save the data as an .Rds file because it has a much better compression rate than .RData
-saveRDS(OISST_data, file = "~/Desktop/OISST_vignette.Rds")
+saveRDS(OISST_data, file = "data/OISST_1982-2023.Rds")
 
 
 ```
 
+#Detecting Events in Gridded Data
+
+```{r setting environment}
+
+#install.packages("heatwaveR")
+#install.packages("doParallel")
+#install.packages("magrittr")
+#install.packages("maps")
+#install.packages("ggpubr")
+
+library(plyr)
+library(dplyr) # For basic data manipulation
+library(ggplot2) # For visualising data
+library(heatwaveR) # For detecting MHWs
+library(tidync) # For easily dealing with NetCDF data
+library(doParallel) # For parallel processing
+library(magrittr) # from pipe use
+library(maps)
+library(ggpubr)
+```
+
+# Loading data
+
+Because we saved our data as an .Rds file, loading it into R is easy.
 
 
+```{r}
+
+OISST <- readRDS("data/OISST_1982-2023.Rds")
+
+```
 
 
+# Event detection
 
+##Two good choices: `dplyr` vs. `plyr`
+
+When we want to make the same calculation across multiple groups of data within one dataframe we have two good options available to us. The first is to make use of the map() suite of functions found in the purrr package, and now implemented in dplyr. This is a very fast tidyverse friendly approach to splitting up tasks. The other good option is to go back in time a bit and use the ddply() function from the plyr package. This is arguably a better approach as it allows us to very easily use multiple cores to detect the MHWs. The problem with this approach is that one must never load the plyr library directly as it has some fundamental inconsistencies with the tidyverse. We will see below how to perform these two different techniques without causing ourselves any headaches.
+
+It is a little clumsy to use multiple functions at once with the two methods so we will combine the calculations we want to make into one wrapper function.
+
+```{r}
+
+event_only <- function(df){
+  
+  # First calculate the climatologies
+  clim <- heatwaveR::ts2clm(data = df, climatologyPeriod = c("1982-01-01", "2011-01-01"))
+  
+  # Then the events
+  event <- heatwaveR::detect_event(data = clim)
+  
+  # Return only the event metric dataframe of results
+  return(event$event)
+}
+
+```
+
+
+##The dplyr method
+
+This method requires no special consideration and is performed just as any other friendly tidyverse code chunk would be.
+
+```{r}
+
+system.time(
+# First we start by choosing the 'OISST' dataframe
+MHW_dplyr <- OISST %>% 
+  # Then we group the data by the 'lon' and 'lat' columns
+  group_by(lon, lat) %>% 
+  # Then we run our MHW detecting function on each group
+  group_modify(~event_only(.x))
+) # ~13 seconds
+
+```
+Running the above calculations with only one of the 2.8 GHz cores on a modern laptop took ~123 seconds. It must be noted however that a recent update to the dplyr package now allows it to interrogate one’s computer to determine how many cores it has at it’s disposal. It then uses one core at full capacity and the other cores usually at half capacity
+
+
+## The `plyr` technique
+
+This method requires that we first tell our machine how many of its processor cores to give us for our calculation.
+
+
+```{r}
+# NB: One should never use ALL available cores, save at least 1 for other essential tasks
+# The computer I'm writing this vignette on has 8 cores, so I use 7 here
+registerDoParallel(cores = 7)
+
+# Detect events
+system.time(
+MHW_plyr <- plyr::ddply(.data = OISST, .variables = c("lon", "lat"), .fun = event_only, .parallel = TRUE)
+) # 4 seconds
+
+
+```
+
+## A harmonious third option
+
+As one may see above, running these calculations on a very large (or even global) gridded dataset can quickly become very heavy. While running these calculations myself on the global OISST dataset I have found that the fastest option is to combine the two options above. In my workflow I have saved each longitude segment of the global OISST dataset as separate files and use the dplyr method on each individual file, while using the `plyr` method to be running the multiple calculations on as many files as my core limit will allow. One may not do this the other way around and use dplyr to run multiple plyr calculations at once. This will confuse your computer and likely cause a stack overflow. Which sounds more fun than it actually is… as I have had to learn.
+
+In order to happily combine these two options into one we will need to convert the dplyr code we wrote above into it’s own wrapper function, which we will then call on a stack of files using the plyr technique. Before we do that we must first create the aforementioned stack of files.
+
+```{r}
+
+for(i in 1:length(unique(OISST$lon))){
+  OISST_sub <- OISST %>% 
+    filter(lon == unique(lon)[i])
+  saveRDS(object = OISST_sub, file = paste0("data/OISST_lon_",i,".Rds"))
+}
+
+
+```
+
+This may initially seem like an unnecessary extra step, but when one is working with time series data it is necessary to have all of the dates at a given pixel loaded at once. Unless one is working from a server/virtual machine/supercomputer this means that one will often not be able to comfortably hold an entire grid for a study area in memory at once. Having the data accessible as thin strips like this makes life easier. And as we see in the code chunk below it also (arguably) allows us to perform the most efficient calculations on our data.
+
+```{r}
+
+# The 'dplyr' wrapper function to pass to 'plyr'
+dplyr_wraper <- function(file_name){
+  MHW_dplyr <- readRDS(file_name)%>%  
+    dplyr::group_by(lon, lat)%>%  
+    dplyr::group_modify(~event_only(.x))
+}
+# Create a vector of the files we want to use
+OISST_files <- dir("data", pattern = "OISST_lon_*", full.names = T)
+
+# Use 'plyr' technique to run 'dplyr' technique with multiple cores
+system.time(
+MHW_result <- plyr::ldply(OISST_files, .fun = dplyr_wraper, .parallel = T)
+) # 31 seconds ####Error in do.ply(i) : task 1 failed - "não foi possível encontrar a função "%>%""
+
+# Save for later use as desired
+saveRDS(MHW_result, "data/MHW_result.Rds")
+
+
+```
+
+Even though this technique is not much faster computationally, it is much lighter on our memory (RAM) as it only loads one longitude slice of our data at a time. To maximise efficiency even further I would recommend writing out this full workflow in a stand-alone script and then running it using source() directly from an R terminal. The gain in speed here appears nominal, but as one scales this up the speed boost becomes apparent.
+
+As mentioned above, recent changes to how dplyr interacts with one’s computer has perhaps slowed down the plyr + dplyr workflow shown here. It may be now that simply using plyr by itself is the better option. It depends on the number of cores and the amount of RAM that one has available.
+
+## Case study
+
+
+Because of human-induced climate change, we anticipate that extreme events will occur more frequently and that they will become greater in intensity. Here we investigate this hypothesis by using gridded SST data, which is the only way that we can assess if this trend is unfolding across large ocean regions. Using the gridded 0.25 degree Reynolds OISST, we will detect marine heatwaves (MHWs) around South Africa by applying the detect_event() function pixel-by-pixel to the data we downloaded in the previous vignette. After detecting the events, we will fit a generalised linear model (GLM) to each pixel to calculate rates of change in some MHW metrics, and then plot the estimated trends.
+
+Trend detection
+
+With our MHW detected we will now look at how to fit some GLMs to the results in order to determine long-term trends in MHW occurrence.
+
+Up first we see how to calculate the number of events that occurred per pixel.
+
+```{r}
+# summarise the number of unique longitude, latitude and year combination:
+
+OISST_n <- MHW_result %>% 
+  mutate(year = lubridate::year(date_start)) %>% 
+  group_by(lon, lat, year) %>% 
+  dplyr::summarise(n = n(), .groups = "drop") %>% 
+  group_by(lon, lat) %>%
+  tidyr::complete(year = c(1982:2019)) %>% # Note that these dates may differ
+  mutate(n = ifelse(is.na(n), 0, n))
+head(OISST_n)
+
+```
+
+Then we specify the particulars of the GLM we are going to use.
+
+
+```{r}
+lin_fun <- function(ev) {
+  mod1 <- glm(n ~ year, family = poisson(link = "log"), data = ev)
+  # extract slope coefficient and its p-value
+  tr <- data.frame(slope = summary(mod1)$coefficients[2,1],
+                   p = summary(mod1)$coefficients[2,4])
+  return(tr)
+}
+```
+
+Lastly we make the calculations.
+
+```{r}
+OISST_nTrend <- plyr::ddply(OISST_n, c("lon", "lat"), lin_fun, .parallel = T)
+OISST_nTrend$pval <- cut(OISST_nTrend$p, breaks = c(0, 0.001, 0.01, 0.05, 1))
+head(OISST_nTrend)
+```
+
+## Visualising the results
+
+Let’s finish this vignette by visualising the long-term trends in the annual occurrence of MHWs per pixel in the chosen study area. First we will grab the base global map from the maps package.
+
+
+```{r}
+
+
+map_base <- ggplot2::fortify(maps::map(fill = TRUE, plot = FALSE)) %>% 
+  dplyr::rename(lon = long)
+
+```
+
+Then we will create two maps that we will stick together using ggpubr. The first map will show the slope of the count of events detected per year over time as shades of red, and the second map will show the significance (p-value) of these trends in shades of grey.
+
+
+```{r}
+map_slope <- ggplot(OISST_nTrend, aes(x = lon, y = lat)) +
+  geom_rect(size = 0.2, fill = NA,
+       aes(xmin = lon - 0.1, xmax = lon + 0.1, ymin = lat - 0.1, ymax = lat + 0.1,
+           colour = pval)) +
+  geom_raster(aes(fill = slope), interpolate = FALSE, alpha = 0.9) +
+  scale_fill_gradient2(name = "count/year (slope)", high = "red", mid = "white",
+                       low = "darkblue", midpoint = 0,
+                       guide = guide_colourbar(direction = "horizontal",
+                                               title.position = "top")) +
+  scale_colour_manual(breaks = c("(0,0.001]", "(0.001,0.01]", "(0.01,0.05]", "(0.05,1]"),
+                      values = c("firebrick1", "firebrick2", "firebrick3", "white"),
+                      name = "p-value", guide = FALSE) +
+  geom_polygon(data = map_base, aes(group = group), 
+               colour = NA, fill = "grey80") +
+  coord_fixed(ratio = 1, xlim = c(13.0, 23.0), ylim = c(-33, -42), expand = TRUE) +
+  labs(x = "", y = "") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+map_p <- ggplot(OISST_nTrend, aes(x = lon, y = lat)) +
+  geom_raster(aes(fill = pval), interpolate = FALSE) +
+  scale_fill_manual(breaks = c("(0,0.001]", "(0.001,0.01]", "(0.01,0.05]",
+                               "(0.05,0.1]", "(0.1,0.5]", "(0.5,1]"),
+                    values = c("black", "grey20", "grey40",
+                               "grey80", "grey90", "white"),
+                    name = "p-value",
+                    guide = guide_legend(direction = "horizontal",
+                                               title.position = "top")) +
+  geom_polygon(data = map_base, aes(group = group), 
+               colour = NA, fill = "grey80") +
+  coord_fixed(ratio = 1, xlim = c(13.0, 23.0), ylim = c(-33, -42), expand = TRUE) +
+  labs(x = "", y = "") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+map_both <- ggpubr::ggarrange(map_slope, map_p, align = "hv")
+map_both
+```
 
 
 
