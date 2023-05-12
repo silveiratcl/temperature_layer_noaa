@@ -197,13 +197,13 @@ saveRDS(OISST_data, file = "data/OISST_1982-2023.Rds")
 #install.packages("maps")
 #install.packages("ggpubr")
 
+library(magrittr) # from pipe use
 library(plyr)
 library(dplyr) # For basic data manipulation
 library(ggplot2) # For visualising data
 library(heatwaveR) # For detecting MHWs
 library(tidync) # For easily dealing with NetCDF data
 library(doParallel) # For parallel processing
-library(magrittr) # from pipe use
 library(maps)
 library(ggpubr)
 ```
@@ -236,7 +236,7 @@ event_only <- function(df){
   clim <- heatwaveR::ts2clm(data = df, climatologyPeriod = c("1982-01-01", "2011-01-01"))
   
   # Then the events
-  event <- heatwaveR::detect_event(data = clim)
+  event <- heatwaveR::detect_event(data = clim, coldSpells = T)
   
   # Return only the event metric dataframe of results
   return(event$event)
@@ -313,6 +313,7 @@ dplyr_wraper <- function(file_name){
 OISST_files <- dir("data", pattern = "OISST_lon_*", full.names = T)
 
 # Use 'plyr' technique to run 'dplyr' technique with multiple cores
+
 system.time(
 MHW_result <- plyr::ldply(OISST_files, .fun = dplyr_wraper, .parallel = T)
 ) # 31 seconds ####Error in do.ply(i) : task 1 failed - "não foi possível encontrar a função "%>%""
